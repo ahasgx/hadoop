@@ -260,12 +260,6 @@
         <Method name="visitFile" />
         <Bug pattern="NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE" />
     </Match>
-    <!-- BlockLocations are user-facing, but LocatedBlocks are not. -->
-    <Match>
-        <Class name="org.apache.hadoop.hdfs.protocol.HdfsFileStatus" />
-        <Field name="hdfsloc" />
-        <Bug pattern="SE_TRANSIENT_FIELD_NOT_RESTORED" />
-    </Match>
     <Match>
        <Class name="org.apache.hadoop.hdfs.server.namenode.NNUpgradeUtil$1" />
        <Method name="visitFile" />

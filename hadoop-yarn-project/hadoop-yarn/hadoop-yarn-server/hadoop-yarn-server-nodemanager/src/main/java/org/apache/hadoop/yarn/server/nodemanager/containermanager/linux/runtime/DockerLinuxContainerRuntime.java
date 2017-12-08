@@ -31,6 +31,7 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.registry.client.api.RegistryConstants;
 import org.apache.hadoop.registry.client.binding.RegistryPathUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
@@ -64,6 +65,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.LinuxContainerRuntimeConstants.*;
@@ -133,6 +135,16 @@ import static org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.r
  *     source is an absolute path that is not a symlink and that points to a
  *     localized resource.
  *   </li>
+ *   <li>
+ *     {@code YARN_CONTAINER_RUNTIME_DOCKER_MOUNTS} allows users to specify
+ +     additional volume mounts for the Docker container. The value of the
+ *     environment variable should be a comma-separated list of mounts.
+ *     All such mounts must be given as {@code source:dest:mode}, and the mode
+ *     must be "ro" (read-only) or "rw" (read-write) to specify the type of
+ *     access being requested. The requested mounts will be validated by
+ *     container-executor based on the values set in container-executor.cfg for
+ *     {@code docker.allowed.ro-mounts} and {@code docker.allowed.rw-mounts}.
+ *   </li>
  * </ul>
  */
 @InterfaceAudience.Private
@@ -150,6 +162,8 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
       "^[a-zA-Z0-9][a-zA-Z0-9_.-]+$";
   private static final Pattern hostnamePattern = Pattern.compile(
       HOSTNAME_PATTERN);
+  private static final Pattern USER_MOUNT_PATTERN = Pattern.compile(
+      "(?<=^|,)([^:\\x00]+):([^:\\x00]+):([a-z]+)");
 
   @InterfaceAudience.Private
   public static final String ENV_DOCKER_CONTAINER_IMAGE =
@@ -175,6 +189,9 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
   @InterfaceAudience.Private
   public static final String ENV_DOCKER_CONTAINER_LOCAL_RESOURCE_MOUNTS =
       "YARN_CONTAINER_RUNTIME_DOCKER_LOCAL_RESOURCE_MOUNTS";
+  @InterfaceAudience.Private
+  public static final String ENV_DOCKER_CONTAINER_MOUNTS =
+      "YARN_CONTAINER_RUNTIME_DOCKER_MOUNTS";
 
   private Configuration conf;
   private Context nmContext;
@@ -320,7 +337,7 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
     return false;
   }
 
-  private void runDockerVolumeCommand(DockerVolumeCommand dockerVolumeCommand,
+  private String runDockerVolumeCommand(DockerVolumeCommand dockerVolumeCommand,
       Container container) throws ContainerExecutionException {
     try {
       String commandFile = dockerClient.writeCommandToTempFile(
@@ -334,6 +351,7 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
       LOG.info("ContainerId=" + container.getContainerId()
           + ", docker volume output for " + dockerVolumeCommand + ": "
           + output);
+      return output;
     } catch (ContainerExecutionException e) {
       LOG.error("Error when writing command to temp file, command="
               + dockerVolumeCommand,
@@ -361,13 +379,71 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
             plugin.getDockerCommandPluginInstance();
         if (dockerCommandPlugin != null) {
           DockerVolumeCommand dockerVolumeCommand =
-              dockerCommandPlugin.getCreateDockerVolumeCommand(ctx.getContainer());
+              dockerCommandPlugin.getCreateDockerVolumeCommand(
+                  ctx.getContainer());
           if (dockerVolumeCommand != null) {
             runDockerVolumeCommand(dockerVolumeCommand, container);
+
+            // After volume created, run inspect to make sure volume properly
+            // created.
+            if (dockerVolumeCommand.getSubCommand().equals(
+                DockerVolumeCommand.VOLUME_CREATE_SUB_COMMAND)) {
+              checkDockerVolumeCreated(dockerVolumeCommand, container);
+            }
           }
         }
       }
     }
+  }
+
+  private void checkDockerVolumeCreated(
+      DockerVolumeCommand dockerVolumeCreationCommand, Container container)
+      throws ContainerExecutionException {
+    DockerVolumeCommand dockerVolumeInspectCommand = new DockerVolumeCommand(
+        DockerVolumeCommand.VOLUME_LS_SUB_COMMAND);
+    dockerVolumeInspectCommand.setFormat("{{.Name}},{{.Driver}}");
+    String output = runDockerVolumeCommand(dockerVolumeInspectCommand,
+        container);
+
+    // Parse output line by line and check if it matches
+    String volumeName = dockerVolumeCreationCommand.getVolumeName();
+    String driverName = dockerVolumeCreationCommand.getDriverName();
+    if (driverName == null) {
+      driverName = "local";
+    }
+
+    for (String line : output.split("\n")) {
+      line = line.trim();
+      String[] arr = line.split(",");
+      String v = arr[0].trim();
+      String d = null;
+      if (arr.length > 1) {
+        d = arr[1].trim();
+      }
+      if (d != null && volumeName.equals(v) && driverName.equals(d)) {
+        // Good we found it.
+        LOG.info(
+            "Docker volume-name=" + volumeName + " driver-name=" + driverName
+                + " already exists for container=" + container
+                .getContainerId() + ", continue...");
+        return;
+      }
+    }
+
+    // Couldn't find the volume
+    String message =
+        " Couldn't find volume=" + volumeName + " driver=" + driverName
+            + " for container=" + container.getContainerId()
+            + ", please check error message in log to understand "
+            + "why this happens.";
+    LOG.error(message);
+
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("All docker volumes in the system, command="
+          + dockerVolumeInspectCommand.toString());
+    }
+
+    throw new ContainerExecutionException(message);
   }
 
   private void validateContainerNetworkType(String network)
@@ -398,6 +474,11 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
       throws ContainerExecutionException {
     if (name == null || name.isEmpty()) {
       name = RegistryPathUtils.encodeYarnID(containerIdStr);
+
+      String domain = conf.get(RegistryConstants.KEY_DNS_DOMAIN);
+      if (domain != null) {
+        name += ("." + domain);
+      }
       validateHostname(name);
     }
 
@@ -669,6 +750,32 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
       }
     }
 
+    if (environment.containsKey(ENV_DOCKER_CONTAINER_MOUNTS)) {
+      Matcher parsedMounts = USER_MOUNT_PATTERN.matcher(
+          environment.get(ENV_DOCKER_CONTAINER_MOUNTS));
+      if (!parsedMounts.find()) {
+        throw new ContainerExecutionException(
+            "Unable to parse user supplied mount list: "
+                + environment.get(ENV_DOCKER_CONTAINER_MOUNTS));
+      }
+      parsedMounts.reset();
+      while (parsedMounts.find()) {
+        String src = parsedMounts.group(1);
+        String dst = parsedMounts.group(2);
+        String mode = parsedMounts.group(3);
+        if (!mode.equals("ro") && !mode.equals("rw")) {
+          throw new ContainerExecutionException(
+              "Invalid mount mode requested for mount: "
+                  + parsedMounts.group());
+        }
+        if (mode.equals("ro")) {
+          runCommand.addReadOnlyMountLocation(src, dst);
+        } else {
+          runCommand.addReadWriteMountLocation(src, dst);
+        }
+      }
+    }
+
     if (allowPrivilegedContainerExecution(container)) {
       runCommand.setPrivileged();
     }
@@ -806,6 +913,8 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
           .executePrivilegedOperation(null, privOp, null,
               null, true, false);
       LOG.info("Docker inspect output for " + containerId + ": " + output);
+      // strip off quotes if any
+      output = output.replaceAll("['\"]", "");
       int index = output.lastIndexOf(',');
       if (index == -1) {
         LOG.error("Incorrect format for ip and host");

@@ -68,6 +68,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.RMCriticalThreadUncaughtExceptionHandler;
 import org.apache.hadoop.yarn.server.resourcemanager.RMServerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
+import org.apache.hadoop.yarn.server.resourcemanager.monitor.SchedulingMonitorManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEventType;
@@ -85,6 +86,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeFinishedContai
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeResourceUpdateEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.UpdatedContainerInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.activities.ActivitiesManager;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.ContainerRequest;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.QueueEntitlement;
 
 
@@ -168,6 +170,8 @@ public abstract class AbstractYarnScheduler
   // the NM in the next heartbeat.
   private boolean autoUpdateContainers = false;
 
+  protected SchedulingMonitorManager schedulingMonitorManager;
+
   /**
    * Construct the service.
    *
@@ -207,8 +211,8 @@ public abstract class AbstractYarnScheduler
           new RMCriticalThreadUncaughtExceptionHandler(rmContext));
       updateThread.setDaemon(true);
     }
-
     super.serviceInit(conf);
+
   }
 
   @Override
@@ -216,6 +220,7 @@ public abstract class AbstractYarnScheduler
     if (updateThread != null) {
       updateThread.start();
     }
+    schedulingMonitorManager.startAll();
     super.serviceStart();
   }
 
@@ -225,12 +230,20 @@ public abstract class AbstractYarnScheduler
       updateThread.interrupt();
       updateThread.join(THREAD_JOIN_TIMEOUT_MS);
     }
+    if (schedulingMonitorManager != null) {
+      schedulingMonitorManager.stop();
+    }
     super.serviceStop();
   }
 
   @VisibleForTesting
   public ClusterNodeTracker getNodeTracker() {
     return nodeTracker;
+  }
+
+  @VisibleForTesting
+  public SchedulingMonitorManager getSchedulingMonitorManager() {
+    return schedulingMonitorManager;
   }
 
   /*
@@ -245,8 +258,8 @@ public abstract class AbstractYarnScheduler
     if (app == null) {
       return containerList;
     }
-    Collection<RMContainer> liveContainers =
-        app.getCurrentAppAttempt().getLiveContainers();
+    Collection<RMContainer> liveContainers = app.getCurrentAppAttempt()
+        .pullContainersToTransfer();
     ContainerId amContainerId = null;
     // For UAM, amContainer would be null
     if (rmContext.getRMApps().get(appId).getCurrentAppAttempt()
@@ -571,6 +584,7 @@ public abstract class AbstractYarnScheduler
           status.getPriority(), null);
     container.setVersion(status.getVersion());
     container.setExecutionType(status.getExecutionType());
+    container.setAllocationRequestId(status.getAllocationRequestId());
     ApplicationAttemptId attemptId =
         container.getId().getApplicationAttemptId();
     RMContainer rmContainer = new RMContainerImpl(container,
@@ -587,10 +601,10 @@ public abstract class AbstractYarnScheduler
    * @param rmContainer rmContainer
    */
   private void recoverResourceRequestForContainer(RMContainer rmContainer) {
-    List<ResourceRequest> requests = rmContainer.getResourceRequests();
+    ContainerRequest containerRequest = rmContainer.getContainerRequest();
 
     // If container state is moved to ACQUIRED, request will be empty.
-    if (requests == null) {
+    if (containerRequest == null) {
       return;
     }
 
@@ -605,7 +619,7 @@ public abstract class AbstractYarnScheduler
     SchedulerApplicationAttempt schedulerAttempt =
         getCurrentAttemptForContainer(rmContainer.getContainerId());
     if (schedulerAttempt != null) {
-      schedulerAttempt.recoverResourceRequestsForContainer(requests);
+      schedulerAttempt.recoverResourceRequestsForContainer(containerRequest);
     }
   }
 
@@ -1361,6 +1375,14 @@ public abstract class AbstractYarnScheduler
   }
 
   /**
+   * Kill a RMContainer. This is meant to be called in tests only to simulate
+   * AM container failures.
+   * @param container the container to kill
+   */
+  @VisibleForTesting
+  public abstract void killContainer(RMContainer container);
+
+  /**
    * Update internal state of the scheduler.  This can be useful for scheduler
    * implementations that maintain some state that needs to be periodically
    * updated; for example, metrics or queue resources.  It will be called by the
@@ -1404,6 +1426,17 @@ public abstract class AbstractYarnScheduler
   protected void triggerUpdate() {
     synchronized (updateThreadMonitor) {
       updateThreadMonitor.notify();
+    }
+  }
+
+  @Override
+  public void reinitialize(Configuration conf, RMContext rmContext)
+      throws IOException {
+    try {
+      LOG.info("Reinitializing SchedulingMonitorManager ...");
+      schedulingMonitorManager.reinitialize(rmContext, conf);
+    } catch (YarnException e) {
+      throw new IOException(e);
     }
   }
 }

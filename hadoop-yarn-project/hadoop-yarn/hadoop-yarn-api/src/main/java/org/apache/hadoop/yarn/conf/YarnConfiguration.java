@@ -142,7 +142,7 @@ public class YarnConfiguration extends Configuration {
   public static final String NM_LOG_CONTAINER_DEBUG_INFO =
       YarnConfiguration.NM_PREFIX + "log-container-debug-info.enabled";
 
-  public static final boolean DEFAULT_NM_LOG_CONTAINER_DEBUG_INFO = false;
+  public static final boolean DEFAULT_NM_LOG_CONTAINER_DEBUG_INFO = true;
 
   ////////////////////////////////
   // IPC Configs
@@ -336,6 +336,8 @@ public class YarnConfiguration extends Configuration {
 
   public static final String YARN_WEBAPP_UI2_WARFILE_PATH = "yarn."
       + "webapp.ui2.war-file-path";
+  public static final String YARN_API_SERVICES_ENABLE = "yarn."
+      + "webapp.api-service.enable";
 
   public static final String RM_RESOURCE_TRACKER_ADDRESS =
     RM_PREFIX + "resource-tracker.address";
@@ -1512,13 +1514,36 @@ public class YarnConfiguration extends Configuration {
   public static final String DEFAULT_NVIDIA_DOCKER_PLUGIN_V1_ENDPOINT =
       "http://localhost:3476/v1.0/docker/cli";
 
+  /**
+   * Prefix for FPGA configurations. Work in progress: This configuration
+   * parameter may be changed/removed in the future.
+   */
+  @Private
+  public static final String NM_FPGA_RESOURCE_PREFIX =
+          NM_RESOURCE_PLUGINS + ".fpga.";
+
+  @Private
+  public static final String NM_FPGA_ALLOWED_DEVICES =
+          NM_FPGA_RESOURCE_PREFIX + "allowed-fpga-devices";
+
+  @Private
+  public static final String NM_FPGA_PATH_TO_EXEC =
+          NM_FPGA_RESOURCE_PREFIX + "path-to-discovery-executables";
+
+  @Private
+  public static final String NM_FPGA_VENDOR_PLUGIN =
+      NM_FPGA_RESOURCE_PREFIX + "vendor-plugin.class";
+
+  @Private
+  public static final String DEFAULT_NM_FPGA_VENDOR_PLUGIN =
+      "org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.fpga.IntelFpgaOpenclPlugin";
 
   /** NM Webapp address.**/
   public static final String NM_WEBAPP_ADDRESS = NM_PREFIX + "webapp.address";
   public static final int DEFAULT_NM_WEBAPP_PORT = 8042;
   public static final String DEFAULT_NM_WEBAPP_ADDRESS = "0.0.0.0:" +
     DEFAULT_NM_WEBAPP_PORT;
-  
+
   /** NM Webapp https address.**/
   public static final String NM_WEBAPP_HTTPS_ADDRESS = NM_PREFIX
       + "webapp.https.address";
@@ -1673,6 +1698,12 @@ public class YarnConfiguration extends Configuration {
   public static final String NM_CONTAINER_LOCALIZER_JAVA_OPTS_DEFAULT =
       "-Xmx256m";
 
+  /** The log level of container localizer process. */
+  public static final String NM_CONTAINER_LOCALIZER_LOG_LEVEL=
+      NM_PREFIX + "container-localizer.log.level";
+  public static final String NM_CONTAINER_LOCALIZER_LOG_LEVEL_DEFAULT =
+      "INFO";
+
   /** Prefix for runtime configuration constants. */
   public static final String LINUX_CONTAINER_RUNTIME_PREFIX = NM_PREFIX +
       "runtime.linux.";
@@ -1733,7 +1764,7 @@ public class YarnConfiguration extends Configuration {
       DOCKER_CONTAINER_RUNTIME_PREFIX + "enable-userremapping.allowed";
 
   /** Set enable user remapping as false by default. */
-  public static final boolean DEFAULT_NM_DOCKER_ENABLE_USER_REMAPPING = false;
+  public static final boolean DEFAULT_NM_DOCKER_ENABLE_USER_REMAPPING = true;
 
   /** lower limit for acceptable uids of user remapped user. */
   public static final String NM_DOCKER_USER_REMAPPING_UID_THRESHOLD =
@@ -2094,6 +2125,9 @@ public class YarnConfiguration extends Configuration {
   public static final String DEFAULT_AMRM_PROXY_INTERCEPTOR_CLASS_PIPELINE =
       "org.apache.hadoop.yarn.server.nodemanager.amrmproxy."
           + "DefaultRequestInterceptor";
+  public static final String AMRM_PROXY_HA_ENABLED = NM_PREFIX
+      + "amrmproxy.ha.enable";
+  public static final boolean DEFAULT_AMRM_PROXY_HA_ENABLED = false;
 
   /**
    * Default platform-agnostic CLASSPATH for YARN applications. A
@@ -2928,6 +2962,11 @@ public class YarnConfiguration extends Configuration {
   public static final String FEDERATION_CACHE_TIME_TO_LIVE_SECS =
       FEDERATION_PREFIX + "cache-ttl.secs";
 
+  public static final String FEDERATION_REGISTRY_BASE_KEY =
+      FEDERATION_PREFIX + "registry.base-dir";
+  public static final String DEFAULT_FEDERATION_REGISTRY_BASE_KEY =
+      "yarnfederation/";
+
   // 5 minutes
   public static final int DEFAULT_FEDERATION_CACHE_TIME_TO_LIVE_SECS = 5 * 60;
 
@@ -3084,6 +3123,11 @@ public class YarnConfiguration extends Configuration {
   ////////////////////////////////
   // Other Configs
   ////////////////////////////////
+
+  public static final String YARN_REGISTRY_CLASS =
+      YARN_PREFIX + "registry.class";
+  public static final String DEFAULT_YARN_REGISTRY_CLASS =
+      "org.apache.hadoop.registry.client.impl.FSRegistryOperationsService";
 
   /**
    * Use YARN_CLIENT_APPLICATION_CLIENT_PROTOCOL_POLL_INTERVAL_MS instead.

@@ -33,6 +33,7 @@ import org.apache.hadoop.hdfs.protocol.DirectoryListing;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
+import org.apache.hadoop.hdfs.protocol.HdfsLocatedFileStatus;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.SnapshotException;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
@@ -255,13 +256,14 @@ class FSDirStatAndListingOp {
         listing[i] =
             createFileStatus(fsd, iip, child, childStoragePolicy, needLocation);
         listingCnt++;
-        LocatedBlocks blks = listing[i].getLocatedBlocks();
-        if (blks != null) {
-          // Once we  hit lsLimit locations, stop.
-          // This helps to prevent excessively large response payloads.
-          // Approximate #locations with locatedBlockCount() * repl_factor
-          locationBudget -=
-              blks.locatedBlockCount() * listing[i].getReplication();
+        if (listing[i] instanceof HdfsLocatedFileStatus) {
+            // Once we  hit lsLimit locations, stop.
+            // This helps to prevent excessively large response payloads.
+            // Approximate #locations with locatedBlockCount() * repl_factor
+            LocatedBlocks blks =
+                ((HdfsLocatedFileStatus)listing[i]).getLocatedBlocks();
+            locationBudget -= (blks == null) ? 0 :
+               blks.locatedBlockCount() * listing[i].getReplication();
         }
       }
       // truncate return array if necessary

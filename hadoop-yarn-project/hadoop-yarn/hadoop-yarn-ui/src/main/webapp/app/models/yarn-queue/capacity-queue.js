@@ -37,6 +37,7 @@ export default DS.Model.extend({
   numActiveApplications: DS.attr('number'),
   users: DS.hasMany('YarnUser'),
   type: DS.attr('string'),
+  resources: DS.attr('object'),
 
   isLeafQueue: function() {
     var len = this.get("children.length");
@@ -50,15 +51,18 @@ export default DS.Model.extend({
     var floatToFixed = Converter.floatToFixed;
     return [
       {
-        label: "Absolute Capacity",
-        value: this.get("name") === "root" ? 100 : floatToFixed(this.get("absCapacity"))
-      },
-      {
         label: "Absolute Used",
+        style: "primary",
         value: this.get("name") === "root" ? floatToFixed(this.get("usedCapacity")) : floatToFixed(this.get("absUsedCapacity"))
       },
       {
+        label: "Absolute Capacity",
+        style: "primary",
+        value: this.get("name") === "root" ? 100 : floatToFixed(this.get("absCapacity"))
+      },
+      {
         label: "Absolute Max Capacity",
+        style: "secondary",
         value: this.get("name") === "root" ? 100 : floatToFixed(this.get("absMaxCapacity"))
       }
     ];
@@ -93,5 +97,5 @@ export default DS.Model.extend({
         value: this.get("numActiveApplications") || 0
       }
     ];
-  }.property("numPendingApplications", "numActiveApplications")
+  }.property("numPendingApplications", "numActiveApplications"),
 });

@@ -55,6 +55,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplicationAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.ContainerRequest;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.PendingAsk;
 import org.apache.hadoop.yarn.server.scheduler.SchedulerRequestKey;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
@@ -460,13 +461,13 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
       liveContainers.put(container.getId(), rmContainer);
 
       // Update consumption and track allocations
-      List<ResourceRequest> resourceRequestList = appSchedulingInfo.allocate(
+      ContainerRequest containerRequest = appSchedulingInfo.allocate(
           type, node, schedulerKey, container);
       this.attemptResourceUsage.incUsed(container.getResource());
       getQueue().incUsedResource(container.getResource());
 
       // Update resource requests related to "request" and store in RMContainer
-      ((RMContainerImpl) rmContainer).setResourceRequests(resourceRequestList);
+      ((RMContainerImpl) rmContainer).setContainerRequest(containerRequest);
 
       // Inform the container
       rmContainer.handle(
@@ -588,7 +589,8 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
     }
   }
 
-  boolean canContainerBePreempted(RMContainer container) {
+  boolean canContainerBePreempted(RMContainer container,
+                                  Resource alreadyConsideringForPreemption) {
     if (!isPreemptable()) {
       return false;
     }
@@ -610,6 +612,15 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
 
     // Check if the app's allocation will be over its fairshare even
     // after preempting this container
+    Resource usageAfterPreemption = getUsageAfterPreemptingContainer(
+            container.getAllocatedResource(),
+            alreadyConsideringForPreemption);
+
+    return !isUsageBelowShare(usageAfterPreemption, getFairShare());
+  }
+
+  private Resource getUsageAfterPreemptingContainer(Resource containerResources,
+          Resource alreadyConsideringForPreemption) {
     Resource usageAfterPreemption = Resources.clone(getResourceUsage());
 
     // Subtract resources of containers already queued for preemption
@@ -617,10 +628,13 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
       Resources.subtractFrom(usageAfterPreemption, resourcesToBePreempted);
     }
 
-    // Subtract this container's allocation to compute usage after preemption
-    Resources.subtractFrom(
-        usageAfterPreemption, container.getAllocatedResource());
-    return !isUsageBelowShare(usageAfterPreemption, getFairShare());
+    // Subtract resources of this container and other containers of this app
+    // that the FSPreemptionThread is already considering for preemption.
+    Resources.subtractFrom(usageAfterPreemption, containerResources);
+    Resources.subtractFrom(usageAfterPreemption,
+            alreadyConsideringForPreemption);
+
+    return usageAfterPreemption;
   }
 
   /**
@@ -1019,7 +1033,7 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
         }
 
         if (offswitchAsk.getCount() > 0) {
-          if (getSchedulingPlacementSet(schedulerKey).getUniqueLocationAsks()
+          if (getAppPlacementAllocator(schedulerKey).getUniqueLocationAsks()
               <= 1 || allowedLocality.equals(NodeType.OFF_SWITCH)) {
             if (LOG.isTraceEnabled()) {
               LOG.trace("Assign container on " + node.getNodeName()
@@ -1304,7 +1318,14 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
 
   @Override
   public float getWeight() {
-    return scheduler.getAppWeight(this);
+    float weight = 1.0F;
+
+    if (scheduler.isSizeBasedWeight()) {
+      // Set weight based on current memory demand
+      weight = (float)(Math.log1p(demand.getMemorySize()) / Math.log(2));
+    }
+
+    return weight * appPriority.getPriority();
   }
 
   @Override

@@ -90,6 +90,7 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants.RollingUpgradeAction;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
+import org.apache.hadoop.hdfs.protocol.HdfsLocatedFileStatus;
 import org.apache.hadoop.hdfs.protocol.HdfsPathHandle;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
@@ -98,6 +99,8 @@ import org.apache.hadoop.hdfs.protocol.ReplicatedBlockStats;
 import org.apache.hadoop.hdfs.protocol.OpenFileEntry;
 import org.apache.hadoop.hdfs.protocol.RollingUpgradeInfo;
 import org.apache.hadoop.hdfs.protocol.RollingUpgradeStatus;
+import org.apache.hadoop.hdfs.protocol.SnapshotDiffReportListing;
+import org.apache.hadoop.hdfs.protocol.SnapshotDiffReportListing.DiffReportListingEntry;
 import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport;
 import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport.DiffReportEntry;
 import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport.DiffType;
@@ -168,6 +171,8 @@ import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.LocatedBlocksProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.QuotaUsageProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.ReencryptionInfoProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.RollingUpgradeStatusProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.SnapshotDiffReportListingEntryProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.SnapshotDiffReportListingProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.SnapshotDiffReportEntryProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.SnapshotDiffReportProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.SnapshottableDirectoryListingProto;
@@ -1488,6 +1493,61 @@ public class PBHelperClient {
         .toByteArray() : null);
   }
 
+  public static SnapshotDiffReportListing convert(
+      SnapshotDiffReportListingProto reportProto) {
+    if (reportProto == null) {
+      return null;
+    }
+    List<SnapshotDiffReportListingEntryProto> modifyList =
+        reportProto.getModifiedEntriesList();
+    List<DiffReportListingEntry> modifiedEntries = new ChunkedArrayList<>();
+    for (SnapshotDiffReportListingEntryProto entryProto : modifyList) {
+      DiffReportListingEntry entry = convert(entryProto);
+      if (entry != null) {
+        modifiedEntries.add(entry);
+      }
+    }
+    List<SnapshotDiffReportListingEntryProto> createList =
+        reportProto.getCreatedEntriesList();
+    List<DiffReportListingEntry> createdEntries = new ChunkedArrayList<>();
+    for (SnapshotDiffReportListingEntryProto entryProto : createList) {
+      DiffReportListingEntry entry = convert(entryProto);
+      if (entry != null) {
+        createdEntries.add(entry);
+      }
+    }
+    List<SnapshotDiffReportListingEntryProto> deletedList =
+        reportProto.getDeletedEntriesList();
+    List<DiffReportListingEntry> deletedEntries = new ChunkedArrayList<>();
+    for (SnapshotDiffReportListingEntryProto entryProto : deletedList) {
+      DiffReportListingEntry entry = convert(entryProto);
+      if (entry != null) {
+        deletedEntries.add(entry);
+      }
+    }
+    byte[] startPath = reportProto.getCursor().getStartPath().toByteArray();
+    boolean isFromEarlier = reportProto.getIsFromEarlier();
+
+    int index = reportProto.getCursor().getIndex();
+    return new SnapshotDiffReportListing(startPath, modifiedEntries,
+        createdEntries, deletedEntries, index, isFromEarlier);
+  }
+
+  public static DiffReportListingEntry convert(
+      SnapshotDiffReportListingEntryProto entry) {
+    if (entry == null) {
+      return null;
+    }
+    long dirId = entry.getDirId();
+    long fileId = entry.getFileId();
+    boolean isReference = entry.getIsReference();
+    byte[] sourceName = entry.getFullpath().toByteArray();
+    byte[] targetName =
+        entry.hasTargetPath() ? entry.getTargetPath().toByteArray() : null;
+    return new DiffReportListingEntry(dirId, fileId, sourceName, isReference,
+        targetName);
+  }
+
   public static SnapshottableDirectoryStatus[] convert(
       SnapshottableDirectoryListingProto sdlp) {
     if (sdlp == null)
@@ -2173,9 +2233,12 @@ public class PBHelperClient {
     if (fs.getFileEncryptionInfo() != null) {
       builder.setFileEncryptionInfo(convert(fs.getFileEncryptionInfo()));
     }
-    LocatedBlocks locations = fs.getLocatedBlocks();
-    if (locations != null) {
-      builder.setLocations(convert(locations));
+    if (fs instanceof HdfsLocatedFileStatus) {
+      final HdfsLocatedFileStatus lfs = (HdfsLocatedFileStatus) fs;
+      LocatedBlocks locations = lfs.getLocatedBlocks();
+      if (locations != null) {
+        builder.setLocations(convert(locations));
+      }
     }
     if(fs.getErasureCodingPolicy() != null) {
       builder.setEcPolicy(convertErasureCodingPolicy(
@@ -2502,6 +2565,74 @@ public class PBHelperClient {
       builder.setTargetPath(targetPath);
     }
     return builder.build();
+  }
+
+  public static SnapshotDiffReportListingEntryProto convert(
+      DiffReportListingEntry entry) {
+    if (entry == null) {
+      return null;
+    }
+    ByteString sourcePath = getByteString(
+        entry.getSourcePath() == null ? DFSUtilClient.EMPTY_BYTES :
+            DFSUtilClient.byteArray2bytes(entry.getSourcePath()));
+    long dirId = entry.getDirId();
+    long fileId = entry.getFileId();
+    boolean isReference = entry.isReference();
+    ByteString targetPath = getByteString(
+        entry.getTargetPath() == null ? DFSUtilClient.EMPTY_BYTES :
+            DFSUtilClient.byteArray2bytes(entry.getTargetPath()));
+    SnapshotDiffReportListingEntryProto.Builder builder =
+        SnapshotDiffReportListingEntryProto.newBuilder().setFullpath(sourcePath)
+            .setDirId(dirId).setFileId(fileId).setIsReference(isReference)
+            .setTargetPath(targetPath);
+    return builder.build();
+  }
+
+  public static SnapshotDiffReportListingProto convert(
+      SnapshotDiffReportListing report) {
+    if (report == null) {
+      return null;
+    }
+    ByteString startPath = getByteString(
+        report.getLastPath() == null ? DFSUtilClient.EMPTY_BYTES :
+            report.getLastPath());
+    List<DiffReportListingEntry> modifiedEntries = report.getModifyList();
+    List<DiffReportListingEntry> createdEntries = report.getCreateList();
+    List<DiffReportListingEntry> deletedEntries = report.getDeleteList();
+    List<SnapshotDiffReportListingEntryProto> modifiedEntryProtos =
+        new ChunkedArrayList<>();
+    for (DiffReportListingEntry entry : modifiedEntries) {
+      SnapshotDiffReportListingEntryProto entryProto = convert(entry);
+      if (entryProto != null) {
+        modifiedEntryProtos.add(entryProto);
+      }
+    }
+    List<SnapshotDiffReportListingEntryProto> createdEntryProtos =
+        new ChunkedArrayList<>();
+    for (DiffReportListingEntry entry : createdEntries) {
+      SnapshotDiffReportListingEntryProto entryProto = convert(entry);
+      if (entryProto != null) {
+        createdEntryProtos.add(entryProto);
+      }
+    }
+    List<SnapshotDiffReportListingEntryProto> deletedEntryProtos =
+        new ChunkedArrayList<>();
+    for (DiffReportListingEntry entry : deletedEntries) {
+      SnapshotDiffReportListingEntryProto entryProto = convert(entry);
+      if (entryProto != null) {
+        deletedEntryProtos.add(entryProto);
+      }
+    }
+
+    return SnapshotDiffReportListingProto.newBuilder()
+        .addAllModifiedEntries(modifiedEntryProtos)
+        .addAllCreatedEntries(createdEntryProtos)
+        .addAllDeletedEntries(deletedEntryProtos)
+        .setIsFromEarlier(report.getIsFromEarlier())
+        .setCursor(HdfsProtos.SnapshotDiffReportCursorProto.newBuilder()
+        .setStartPath(startPath)
+        .setIndex(report.getLastIndex()).build())
+        .build();
   }
 
   public static SnapshotDiffReportProto convert(SnapshotDiffReport report) {

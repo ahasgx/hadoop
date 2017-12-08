@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.curator.framework.AuthInfo;
@@ -67,8 +68,6 @@ import org.apache.hadoop.yarn.server.resourcemanager.metrics.NoOpSystemMetricPub
 import org.apache.hadoop.yarn.server.resourcemanager.metrics.SystemMetricsPublisher;
 import org.apache.hadoop.yarn.server.resourcemanager.metrics.TimelineServiceV1Publisher;
 import org.apache.hadoop.yarn.server.resourcemanager.metrics.TimelineServiceV2Publisher;
-import org.apache.hadoop.yarn.server.resourcemanager.monitor.SchedulingEditPolicy;
-import org.apache.hadoop.yarn.server.resourcemanager.monitor.SchedulingMonitor;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMDelegatedNodeLabelsUpdater;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.NullRMStateStore;
@@ -113,8 +112,6 @@ import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 import org.apache.zookeeper.server.auth.DigestAuthenticationProvider;
 import org.eclipse.jetty.webapp.WebAppContext;
 
-import com.google.common.annotations.VisibleForTesting;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
@@ -126,7 +123,9 @@ import java.nio.charset.Charset;
 import java.security.PrivilegedExceptionAction;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -358,7 +357,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
         conf.getBoolean(YarnConfiguration.CURATOR_LEADER_ELECTOR,
             YarnConfiguration.DEFAULT_CURATOR_LEADER_ELECTOR_ENABLED);
     if (curatorEnabled) {
-      this.zkManager = getAndStartZKManager(conf);
+      this.zkManager = createAndStartZKManager(conf);
       elector = new CuratorBasedElectorService(this);
     } else {
       elector = new ActiveStandbyElectorBasedElectorService(this);
@@ -372,11 +371,8 @@ public class ResourceManager extends CompositeService implements Recoverable {
    * @return ZooKeeper Curator manager.
    * @throws IOException If it cannot create the manager.
    */
-  public synchronized ZKCuratorManager getAndStartZKManager(Configuration
+  public ZKCuratorManager createAndStartZKManager(Configuration
       config) throws IOException {
-    if (this.zkManager != null) {
-      return zkManager;
-    }
     ZKCuratorManager manager = new ZKCuratorManager(config);
 
     // Get authentication
@@ -396,7 +392,10 @@ public class ResourceManager extends CompositeService implements Recoverable {
     }
 
     manager.start(authInfos);
-    this.zkManager = manager;
+    return manager;
+  }
+
+  public ZKCuratorManager getZKManager() {
     return zkManager;
   }
 
@@ -709,8 +708,6 @@ public class ResourceManager extends CompositeService implements Recoverable {
         }
       }
 
-      createSchedulerMonitors();
-
       masterService = createApplicationMasterService();
       addService(masterService) ;
       rmContext.setApplicationMasterService(masterService);
@@ -808,30 +805,6 @@ public class ResourceManager extends CompositeService implements Recoverable {
         }
       }
 
-    }
-
-    protected void createSchedulerMonitors() {
-      if (conf.getBoolean(YarnConfiguration.RM_SCHEDULER_ENABLE_MONITORS,
-          YarnConfiguration.DEFAULT_RM_SCHEDULER_ENABLE_MONITORS)) {
-        LOG.info("Loading policy monitors");
-        List<SchedulingEditPolicy> policies = conf.getInstances(
-            YarnConfiguration.RM_SCHEDULER_MONITOR_POLICIES,
-            SchedulingEditPolicy.class);
-        if (policies.size() > 0) {
-          for (SchedulingEditPolicy policy : policies) {
-            LOG.info("LOADING SchedulingEditPolicy:" + policy.getPolicyName());
-            // periodically check whether we need to take action to guarantee
-            // constraints
-            SchedulingMonitor mon = new SchedulingMonitor(rmContext, policy);
-            addService(mon);
-          }
-        } else {
-          LOG.warn("Policy monitors configured (" +
-              YarnConfiguration.RM_SCHEDULER_ENABLE_MONITORS +
-              ") but none specified (" +
-              YarnConfiguration.RM_SCHEDULER_MONITOR_POLICIES + ")");
-        }
-      }
     }
   }
 
@@ -1062,7 +1035,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
   }
 
   protected void startWepApp() {
-
+    Map<String, String> serviceConfig = null;
     Configuration conf = getConfig();
 
     RMWebAppUtil.setupSecurityAndFilters(conf,
@@ -1128,7 +1101,15 @@ public class ResourceManager extends CompositeService implements Recoverable {
       }
     }
 
-    webApp = builder.start(new RMWebApp(this), uiWebAppContext);
+    if (getConfig().getBoolean(YarnConfiguration.YARN_API_SERVICES_ENABLE,
+        false)) {
+      serviceConfig = new HashMap<String, String>();
+      String apiPackages = "org.apache.hadoop.yarn.service.webapp;" +
+          "org.apache.hadoop.yarn.webapp";
+      serviceConfig.put("PackageName", apiPackages);
+      serviceConfig.put("PathSpec", "/app/*");
+    }
+    webApp = builder.start(new RMWebApp(this), uiWebAppContext, serviceConfig);
   }
 
   private String getWebAppsPath(String appName) {

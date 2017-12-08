@@ -42,6 +42,7 @@ public class ResourceInformation implements Comparable<ResourceInformation> {
   public static final String MEMORY_URI = "memory-mb";
   public static final String VCORES_URI = "vcores";
   public static final String GPU_URI = "yarn.io/gpu";
+  public static final String FPGA_URI = "yarn.io/fpga";
 
   public static final ResourceInformation MEMORY_MB =
       ResourceInformation.newInstance(MEMORY_URI, "Mi");
@@ -49,9 +50,11 @@ public class ResourceInformation implements Comparable<ResourceInformation> {
       ResourceInformation.newInstance(VCORES_URI);
   public static final ResourceInformation GPUS =
       ResourceInformation.newInstance(GPU_URI);
+  public static final ResourceInformation FPGAS =
+          ResourceInformation.newInstance(FPGA_URI);
 
   public static final Map<String, ResourceInformation> MANDATORY_RESOURCES =
-      ImmutableMap.of(MEMORY_URI, MEMORY_MB, VCORES_URI, VCORES, GPU_URI, GPUS);
+      ImmutableMap.of(MEMORY_URI, MEMORY_MB, VCORES_URI, VCORES, GPU_URI, GPUS, FPGA_URI, FPGAS);
 
   /**
    * Get the name for the resource.
@@ -64,6 +67,11 @@ public class ResourceInformation implements Comparable<ResourceInformation> {
 
   /**
    * Set the name for the resource.
+   *
+   * A valid resource name must begin with a letter and contain only letters,
+   * numbers, and any of: '.', '_', or '-'. A valid resource name may also be
+   * optionally preceded by a name space followed by a slash. A valid name space
+   * consists of period-separated groups of letters, numbers, and dashes."
    *
    * @param rName name for the resource
    */
@@ -218,6 +226,12 @@ public class ResourceInformation implements Comparable<ResourceInformation> {
       ResourceTypes resourceType) {
     return ResourceInformation.newInstance(name, units, 0L, resourceType, 0L,
         Long.MAX_VALUE);
+  }
+
+  public static ResourceInformation newInstance(String name, String units,
+      long minRes, long maxRes) {
+    return ResourceInformation.newInstance(name, units, 0L,
+        ResourceTypes.COUNTABLE, minRes, maxRes);
   }
 
   public static ResourceInformation newInstance(String name, long value) {

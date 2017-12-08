@@ -52,6 +52,7 @@ import org.apache.hadoop.yarn.security.YarnAuthorizationProvider;
 import org.apache.hadoop.yarn.server.api.protocolrecords.NMContainerStatus;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.RMCriticalThreadUncaughtExceptionHandler;
+import org.apache.hadoop.yarn.server.resourcemanager.monitor.SchedulingMonitorManager;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationConstants;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
@@ -177,7 +178,6 @@ public class FairScheduler extends
   protected double rackLocalityThreshold; // Cluster threshold for rack locality
   protected long nodeLocalityDelayMs; // Delay for node locality
   protected long rackLocalityDelayMs; // Delay for rack locality
-  private FairSchedulerEventLog eventLog; // Machine-readable event log
   protected boolean assignMultiple; // Allocate multiple containers per
                                     // heartbeat
   @VisibleForTesting
@@ -368,21 +368,8 @@ public class FairScheduler extends
     return rmContext.getContainerTokenSecretManager();
   }
 
-  public float getAppWeight(FSAppAttempt app) {
-    double weight = 1.0;
-
-    if (sizeBasedWeight) {
-      readLock.lock();
-
-      try {
-        // Set weight based on current memory demand
-        weight = Math.log1p(app.getDemand().getMemorySize()) / Math.log(2);
-      } finally {
-        readLock.unlock();
-      }
-    }
-
-    return (float)weight * app.getPriority().getPriority();
+  public boolean isSizeBasedWeight() {
+    return sizeBasedWeight;
   }
 
   public Resource getIncrementResourceCapability() {
@@ -415,10 +402,6 @@ public class FairScheduler extends
 
   public int getContinuousSchedulingSleepMs() {
     return continuousSchedulingSleepMs;
-  }
-
-  public FairSchedulerEventLog getEventLog() {
-    return eventLog;
   }
 
   /**
@@ -786,6 +769,16 @@ public class FairScheduler extends
         incrAllocation);
   }
 
+  @VisibleForTesting
+  @Override
+  public void killContainer(RMContainer container) {
+    ContainerStatus status = SchedulerUtils.createKilledContainerStatus(
+        container.getContainerId(),
+        "Killed by RM to simulate an AM container failure");
+    LOG.info("Killing container " + container);
+    completedContainer(container, status, RMContainerEventType.KILL);
+  }
+
   @Override
   public Allocation allocate(ApplicationAttemptId appAttemptId,
       List<ResourceRequest> ask, List<ContainerId> release,
@@ -870,7 +863,8 @@ public class FairScheduler extends
         preemptionContainerIds, null, null,
         application.pullUpdatedNMTokens(), null, null,
         application.pullNewlyPromotedContainers(),
-        application.pullNewlyDemotedContainers());
+        application.pullNewlyDemotedContainers(),
+        application.pullPreviousAttemptContainers());
   }
 
   @Override
@@ -878,7 +872,6 @@ public class FairScheduler extends
     try {
       writeLock.lock();
       long start = getClock().getTime();
-      eventLog.log("HEARTBEAT", nm.getHostName());
       super.nodeUpdate(nm);
 
       FSSchedulerNode fsNode = getFSSchedulerNode(nm.getNodeID());
@@ -1287,8 +1280,6 @@ public class FairScheduler extends
 
       // This stores per-application scheduling information
       this.applications = new ConcurrentHashMap<>();
-      this.eventLog = new FairSchedulerEventLog();
-      eventLog.init(this.conf);
 
       allocConf = new AllocationConfiguration(conf);
       try {
@@ -1362,6 +1353,10 @@ public class FairScheduler extends
   public void serviceInit(Configuration conf) throws Exception {
     initScheduler(conf);
     super.serviceInit(conf);
+
+    // Initialize SchedulingMonitorManager
+    schedulingMonitorManager = new SchedulingMonitorManager();
+    schedulingMonitorManager.initialize(rmContext, conf);
   }
 
   @Override
@@ -1399,6 +1394,7 @@ public class FairScheduler extends
       throws IOException {
     try {
       allocsLoader.reloadAllocations();
+      super.reinitialize(conf, rmContext);
     } catch (Exception e) {
       LOG.error("Failed to reload allocations file", e);
     }
